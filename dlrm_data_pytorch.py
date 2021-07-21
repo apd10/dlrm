@@ -95,10 +95,14 @@ class CriteoDataset(Dataset):
             for i in range(days):
                 reo_data = self.npzfile + "_{0}_reordered.npz".format(i)
                 if not path.exists(str(reo_data)):
+                    print("NOT FOUND", str(reo_data), flush=True)
                     data_ready = False
         else:
             if not path.exists(str(pro_data)):
                 data_ready = False
+
+
+        print("dataset ready:",data_ready, flush=True)
 
         # pre-process data if needed
         # WARNNING: when memory mapping is used we get a collection of files
@@ -428,11 +432,14 @@ def make_criteo_data_and_loaders(args, offset_to_length_converter=False):
             test_file = d_path + "_test.bin"
             # val_file = d_path + "_val.bin"
             counts_file = args.raw_data_file + '_fea_count.npz'
+            print("Will be Makikng a BinDataset", flush=True)
 
             if any(not path.exists(p) for p in [train_file,
                                                 test_file,
                                                 counts_file]):
                 ensure_dataset_preprocessed(args, d_path)
+
+            print("dataset preprocessed", flush=True)
 
             train_data = data_loader_terabyte.CriteoBinDataset(
                 data_file=train_file,
@@ -442,7 +449,7 @@ def make_criteo_data_and_loaders(args, offset_to_length_converter=False):
             )
 
             mlperf_logger.log_event(key=mlperf_logger.constants.TRAIN_SAMPLES,
-                                    value=train_data.num_samples)
+                                    value=train_data.num_entries)
 
             train_loader = torch.utils.data.DataLoader(
                 train_data,
@@ -464,7 +471,7 @@ def make_criteo_data_and_loaders(args, offset_to_length_converter=False):
             )
 
             mlperf_logger.log_event(key=mlperf_logger.constants.EVAL_SAMPLES,
-                                    value=test_data.num_samples)
+                                    value=test_data.num_entries)
 
             test_loader = torch.utils.data.DataLoader(
                 test_data,

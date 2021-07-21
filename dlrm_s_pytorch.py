@@ -97,6 +97,9 @@ from tricks.md_embedding_bag import PrEmbeddingBag, md_solver
 # quotient-remainder trick
 from tricks.qr_embedding_bag import QREmbeddingBag
 
+# RMA
+import hashedEmbeddingBag
+
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", category=DeprecationWarning)
     try:
@@ -234,8 +237,15 @@ class DLRM_Net(nn.Module):
         return torch.nn.Sequential(*layers)
 
     def create_emb(self, m, ln, weighted_pooling=None):
+        self.hashed_weight = None
+        if self.is_rma:
+              self.hashed_weight = nn.Parameter(torch.from_numpy(np.random.uniform(
+                                        low=-np.sqrt(1 / max(ln)), high=np.sqrt(1 / max(ln)), size=((self.rma_size,))
+                                        ).astype(np.float32)))
+
         emb_l = nn.ModuleList()
         v_W_l = []
+        val_idx_offset = 0
         for i in range(0, ln.size):
             if ext_dist.my_size > 1:
                 if i not in self.local_emb_indices:
@@ -261,6 +271,10 @@ class DLRM_Net(nn.Module):
                     low=-np.sqrt(1 / n), high=np.sqrt(1 / n), size=(n, _m)
                 ).astype(np.float32)
                 EE.embs.weight.data = torch.tensor(W, requires_grad=True)
+            elif self.is_rma:
+                EE = hashedEmbeddingBag.HashedEmbeddingBag(n, m, 0.001 #dummy
+                                        ,mode="sum", _weight=self.hashed_weight, signature=None,
+                                        hmode="rand_hash", keymode="keymode_hashweight", val_offset = val_idx_offset)
             else:
                 EE = nn.EmbeddingBag(n, m, mode="sum", sparse=True)
                 # initialize embeddings
@@ -279,6 +293,7 @@ class DLRM_Net(nn.Module):
             else:
                 v_W_l.append(torch.ones(n, dtype=torch.float32))
             emb_l.append(EE)
+            val_idx_offset += n
         return emb_l, v_W_l
 
     def __init__(
@@ -301,7 +316,9 @@ class DLRM_Net(nn.Module):
         md_flag=False,
         md_threshold=200,
         weighted_pooling=None,
-        loss_function="bce"
+        loss_function="bce",
+        is_rma=False,
+        rma_size=1000000
     ):
         super(DLRM_Net, self).__init__()
 
@@ -337,6 +354,9 @@ class DLRM_Net(nn.Module):
             self.md_flag = md_flag
             if self.md_flag:
                 self.md_threshold = md_threshold
+            # rma
+            self.is_rma = is_rma
+            self.rma_size = rma_size
 
             # If running distributed, get local slice of embedding tables
             if ext_dist.my_size > 1:
@@ -917,6 +937,8 @@ def run():
     parser.add_argument("--qr-threshold", type=int, default=200)
     parser.add_argument("--qr-operation", type=str, default="mult")
     parser.add_argument("--qr-collisions", type=int, default=4)
+    parser.add_argument("--is-rma", action="store_true", default=False)
+    parser.add_argument("--rma-size", type=int, default=1000000)
     # activations and loss
     parser.add_argument("--activation-function", type=str, default="relu")
     parser.add_argument("--loss-function", type=str, default="mse")  # or bce or wbce
@@ -1277,7 +1299,9 @@ def run():
         md_flag=args.md_flag,
         md_threshold=args.md_threshold,
         weighted_pooling=args.weighted_pooling,
-        loss_function=args.loss_function
+        loss_function=args.loss_function,
+        is_rma=args.is_rma,
+        rma_size=args.rma_size
     )
 
     # test prints
