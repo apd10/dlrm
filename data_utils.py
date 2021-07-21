@@ -46,7 +46,7 @@ from multiprocessing import Process, Manager
 # import collections as coll
 
 import numpy as np
-
+import pdb
 
 def convertUStringToDistinctIntsDict(mat, convertDicts, counts):
     # Converts matrix of unicode strings into distinct integers.
@@ -167,6 +167,34 @@ def processCriteoAdData(d_path, d_file, npzfile, i, convertDicts, pre_comp_count
     # print("\nSanity check on counts passed")
 
     return
+
+
+'''
+    195841983 day 0
+    199563535 day 1
+    196792019 day 2
+    181115208 day 3
+    152115810 day 4
+    172548507 day 5
+    204846845 day 6
+    200801003 day 7
+    193772492 day 8
+    198424372 day 9
+    185778055 day 10
+    153588700 day 11
+    169003364 day 12
+    194216520 day 13
+    194081279 day 14
+    187154596 day 15
+    177984934 day 16
+    163382602 day 17
+    142061091 day 18
+    156534237 day 19
+    193627464 day 20
+    192215183 day 21
+    189747893 day 22
+    178274637 day 23
+'''
 
 
 def concatCriteoAdData(
@@ -725,18 +753,20 @@ def concatCriteoAdData(
         print("Concatenating multiple days into %s.npz file" % str(d_path + o_filename))
 
         # load and concatenate data
+        X_cat = np.zeros((total_count, 26));
+        X_int = np.zeros((total_count, 13));
+        y = np.zeros((total_count,)) - 1;
+        loc = 0
         for i in range(days):
             filename_i = npzfile + "_{0}_processed.npz".format(i)
             with np.load(filename_i) as data:
-                if i == 0:
-                    X_cat = data["X_cat"]
-                    X_int = data["X_int"]
-                    y = data["y"]
-                else:
-                    X_cat = np.concatenate((X_cat, data["X_cat"]))
-                    X_int = np.concatenate((X_int, data["X_int"]))
-                    y = np.concatenate((y, data["y"]))
-            print("Loaded day:", i, "y = 1:", len(y[y == 1]), "y = 0:", len(y[y == 0]))
+                    this_count = len(data["y"])
+                    X_cat[loc:loc+this_count,:] = data["X_cat"]
+                    X_int[loc:loc+this_count,:] = data["X_int"]
+                    y[loc:loc+this_count] =  data["y"]
+                    loc += this_count
+            #print("Loaded day:", i, "y = 1:", len(y[y == 1]), "y = 0:", len(y[y == 0]), flush=True)
+            print("Loaded day:", i, "count:", loc, "/", total_count, flush=True)
 
         with np.load(d_path + d_file + "_fea_count.npz") as data:
             counts = data["counts"]
@@ -948,15 +978,18 @@ def getCriteoAdData(
             # Each line in the file is a sample, consisting of 13 continuous and
             # 26 categorical features (an extra space indicates that feature is
             # missing and will be interpreted as 0).
+
+            lines = [ 195841983 , 199563535 , 196792019 , 181115208 , 152115810 , 172548507 , 204846845 , 200801003 , 193772492 , 198424372 , 185778055 , 153588700 , 169003364 , 194216520 , 194081279 , 187154596 , 177984934 , 163382602 , 142061091 , 156534237 , 193627464 , 192215183 , 189747893 , 178274637 ]
             for i in range(days):
                 datafile_i = datafile + "_" + str(i)  # + ".gz"
                 if path.exists(str(datafile_i)):
                     print("Reading data from path=%s" % (str(datafile_i)))
                     # file day_<number>
                     total_per_file_count = 0
-                    with open(str(datafile_i)) as f:
-                        for _ in f:
-                            total_per_file_count += 1
+                    #with open(str(datafile_i)) as f:
+                    #    for _ in f:
+                    #        total_per_file_count += 1
+                    total_per_file_count = lines[i]
                     total_per_file.append(total_per_file_count)
                     total_count += total_per_file_count
                 else:
