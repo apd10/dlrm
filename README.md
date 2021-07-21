@@ -14,7 +14,6 @@ Running the UMA/RMA
       - You can change the --rma-size to use required memory  
 
 
-
 Deep Learning Recommendation Model for Personalization and Recommendation Systems:
 Refer to the Original dlrm repo for dlrm description
 
