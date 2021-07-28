@@ -61,6 +61,7 @@ import datetime
 import json
 import sys
 import time
+import pdb
 
 # onnx
 # The onnx import causes deprecation warnings every time workers
@@ -99,6 +100,7 @@ from tricks.qr_embedding_bag import QREmbeddingBag
 
 # RMA
 import hashedEmbeddingBag
+import hashedEmbeddingCPU
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -274,7 +276,8 @@ class DLRM_Net(nn.Module):
             elif self.is_rma:
                 EE = hashedEmbeddingBag.HashedEmbeddingBag(n, m, 0.001 #dummy
                                         ,mode="sum", _weight=self.hashed_weight, signature=None,
-                                        hmode="rand_hash", keymode="keymode_hashweight", val_offset = val_idx_offset)
+                                        hmode="rand_hash", keymode="keymode_hashweight", val_offset = val_idx_offset, uma_chunk_size=self.rma_chunk_size)
+                #EE = hashedEmbeddingCPU.HashedEmbeddingCPU(n, m, self.hashed_weight, val_offset = val_idx_offset)
             else:
                 EE = nn.EmbeddingBag(n, m, mode="sum", sparse=True)
                 # initialize embeddings
@@ -318,7 +321,8 @@ class DLRM_Net(nn.Module):
         weighted_pooling=None,
         loss_function="bce",
         is_rma=False,
-        rma_size=1000000
+        rma_size=1000000,
+        rma_chunk_size=1
     ):
         super(DLRM_Net, self).__init__()
 
@@ -357,6 +361,7 @@ class DLRM_Net(nn.Module):
             # rma
             self.is_rma = is_rma
             self.rma_size = rma_size
+            self.rma_chunk_size = rma_chunk_size
 
             # If running distributed, get local slice of embedding tables
             if ext_dist.my_size > 1:
@@ -939,6 +944,7 @@ def run():
     parser.add_argument("--qr-collisions", type=int, default=4)
     parser.add_argument("--is-rma", action="store_true", default=False)
     parser.add_argument("--rma-size", type=int, default=1000000)
+    parser.add_argument("--rma-chunk-size", type=int, default=1) # set to bus size for fastest but at the cost of correlations
     # activations and loss
     parser.add_argument("--activation-function", type=str, default="relu")
     parser.add_argument("--loss-function", type=str, default="mse")  # or bce or wbce
@@ -1301,7 +1307,8 @@ def run():
         weighted_pooling=args.weighted_pooling,
         loss_function=args.loss_function,
         is_rma=args.is_rma,
-        rma_size=args.rma_size
+        rma_size=args.rma_size,
+        rma_chunk_size = args.rma_chunk_size,
     )
 
     # test prints
