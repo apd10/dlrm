@@ -1,4 +1,4 @@
-Universal Memory Allocation in DLRM
+ROBE-Z in DLRM
 
 Running the UMA/RMA 
 1). create the Kaggle/CriteTB dataset .
@@ -8,6 +8,7 @@ Running the UMA/RMA
   - and run python3 setup install in that repo
 
 3)  A) run the bench/train_tb_rma_final.sh to run 1000x compression on official MLPerf DLRM Model
+       run the bench/train_tb_rma_final.chunk32.sh to run 1000x compression on official MLPerf DLRM Model using Z = 32
 
     B) run the bench/train_kaggle_rma.sh to run 1000x compression on kaggle model (embedding size 16)
 
