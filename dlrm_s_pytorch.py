@@ -788,6 +788,7 @@ def inference(
     if args.mlperf_logging:
         scores = []
         targets = []
+    inference_time = 0
 
     for i, testBatch in enumerate(test_ld):
         # early exit if nbatches was set by the user and was exceeded
@@ -804,6 +805,7 @@ def inference(
             continue
 
         # forward pass
+        temp_inf_start = time_wrap(use_gpu)
         Z_test = dlrm_wrap(
             X_test,
             lS_o_test,
@@ -812,6 +814,8 @@ def inference(
             device,
             ndevices=ndevices,
         )
+        temp_inf_stop = time_wrap(use_gpu)
+        inference_time += temp_inf_stop - temp_inf_start
         ### gather the distributed results on each rank ###
         # For some reason it requires explicit sync before all_gather call if
         # tensor is on GPU memory
@@ -912,6 +916,7 @@ def inference(
             ),
             flush=True,
         )
+    print("Inference time", inference_time)
     return model_metrics_dict, is_best
 
 
@@ -1523,6 +1528,7 @@ def run():
         if not args.inference_only:
             k = 0
             total_time_begin = 0
+            training_time = 0
             while k < args.nepochs:
                 if args.mlperf_logging:
                     mlperf_logger.barrier()
@@ -1578,6 +1584,8 @@ def run():
 
                     mbs = T.shape[0]  # = args.mini_batch_size except maybe for last
 
+                    train_temp_start = time_wrap(use_gpu)
+
                     # forward pass
                     Z = dlrm_wrap(
                         X,
@@ -1622,6 +1630,9 @@ def run():
                             optimizer.step()
                             lr_scheduler.step()
 
+                    train_temp_stop = time_wrap(use_gpu)
+                    training_time += train_temp_stop - train_temp_start
+
                     if args.mlperf_logging:
                         total_time += iteration_time
                     else:
@@ -1658,8 +1669,8 @@ def run():
                             wall_time = " ({})".format(time.strftime("%H:%M"))
 
                         print(
-                            "Finished {} it {}/{} of epoch {}, {:.2f} ms/it,".format(
-                                str_run_type, j + 1, nbatches, k, gT
+                            "Finished {} it {}/{} of epoch {}, {:.2f} ms/it, training_time:{:.4f}".format(
+                                str_run_type, j + 1, nbatches, k, gT, training_time
                             )
                             + " loss {:.6f}".format(train_loss)
                             + wall_time,
