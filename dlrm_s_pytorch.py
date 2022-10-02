@@ -100,7 +100,8 @@ from tricks.qr_embedding_bag import QREmbeddingBag
 
 # RMA
 import hashedEmbeddingBag
-import hashedEmbeddingCPU
+import RobezEmbeddingCPU
+import robez
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -274,10 +275,7 @@ class DLRM_Net(nn.Module):
                 ).astype(np.float32)
                 EE.embs.weight.data = torch.tensor(W, requires_grad=True)
             elif self.is_rma:
-                EE = hashedEmbeddingBag.HashedEmbeddingBag(n, m, 0.001 #dummy
-                                        ,mode="sum", _weight=self.hashed_weight, signature=None,
-                                        hmode="rand_hash", keymode="keymode_hashweight", val_offset = val_idx_offset, uma_chunk_size=self.rma_chunk_size)
-                #EE = hashedEmbeddingCPU.HashedEmbeddingCPU(n, m, self.hashed_weight, val_offset = val_idx_offset)
+                EE = RobezEmbeddingCPU.RobezEmbedding(n, m, self.hashed_weight, val_offset = val_idx_offset, robez_chunk_size=32, sparse=self.rma_sparse)
             else:
                 EE = nn.EmbeddingBag(n, m, mode="sum", sparse=True)
                 # initialize embeddings
@@ -321,6 +319,8 @@ class DLRM_Net(nn.Module):
         weighted_pooling=None,
         loss_function="bce",
         is_rma=False,
+        use_new_robez=False,
+        rma_sparse=False,
         rma_size=1000000,
         rma_chunk_size=1
     ):
@@ -333,6 +333,17 @@ class DLRM_Net(nn.Module):
             and (ln_top is not None)
             and (arch_interaction_op is not None)
         ):
+
+            # timing results 
+            self.seq_bmlp_time = 0
+            self.seq_tmlp_time = 0
+            self.seq_int_time = 0
+            self.seq_emb_time = 0
+            self.par_bmlp_time = 0
+            self.par_tmlp_time = 0
+            self.par_int_time = 0
+            self.par_emb_time = 0
+          
 
             # save arguments
             self.ndevices = ndevices
@@ -360,6 +371,8 @@ class DLRM_Net(nn.Module):
                 self.md_threshold = md_threshold
             # rma
             self.is_rma = is_rma
+            self.use_new_robez = use_new_robez
+            self.rma_sparse = rma_sparse
             self.rma_size = rma_size
             self.rma_chunk_size = rma_chunk_size
 
@@ -602,22 +615,40 @@ class DLRM_Net(nn.Module):
 
     def sequential_forward(self, dense_x, lS_o, lS_i):
         # process dense features (using bottom mlp), resulting in a row vector
+        mlp_in_time = time_wrap(False)
         x = self.apply_mlp(dense_x, self.bot_l)
+        mlp_out_time = time_wrap(False)
         # debug prints
         # print("intermediate")
         # print(x.detach().cpu().numpy())
 
         # process sparse features(using embeddings), resulting in a list of row vectors
+
+        emb_in_time = time_wrap(False)
         ly = self.apply_emb(lS_o, lS_i, self.emb_l, self.v_W_l)
+        emb_out_time = time_wrap(False)
+
         # for y in ly:
         #     print(y.detach().cpu().numpy())
 
         # interact features (dense and sparse)
+
+        int_in_time = time_wrap(False)
         z = self.interact_features(x, ly)
+        int_out_time = time_wrap(False)
         # print(z.detach().cpu().numpy())
 
         # obtain probability of a click (using top mlp)
+
+        tmlp_in_time = time_wrap(False)
         p = self.apply_mlp(z, self.top_l)
+        tmlp_out_time = time_wrap(False)
+
+        self.seq_bmlp_time += (mlp_out_time - mlp_in_time)
+        self.seq_tmlp_time += (tmlp_out_time - tmlp_in_time)
+        self.seq_int_time += (int_out_time - int_in_time)
+        self.seq_emb_time += (emb_out_time - emb_in_time)
+
 
         # clamp output if needed
         if 0.0 < self.loss_threshold and self.loss_threshold < 1.0:
@@ -667,11 +698,16 @@ class DLRM_Net(nn.Module):
         ### prepare input (overwrite) ###
         # scatter dense features (data parallelism)
         # print(dense_x.device)
+        in_time = time_wrap(False)
         dense_x = scatter(dense_x, device_ids, dim=0)
+        ot_time = time_wrap(False)
+
+        self.par_bmlp_time += (ot_time - in_time)
         # distribute sparse features (model parallelism)
         if (len(self.emb_l) != len(lS_o)) or (len(self.emb_l) != len(lS_i)):
             sys.exit("ERROR: corrupted model input detected in parallel_forward call")
 
+        in_time = time_wrap(False)
         t_list = []
         i_list = []
         for k, _ in enumerate(self.emb_l):
@@ -680,6 +716,8 @@ class DLRM_Net(nn.Module):
             i_list.append(lS_i[k].to(d))
         lS_o = t_list
         lS_i = i_list
+        ot_time = time_wrap(False)
+        self.par_emb_time += (ot_time - in_time)
 
         ### compute results in parallel ###
         # bottom mlp
@@ -688,12 +726,18 @@ class DLRM_Net(nn.Module):
         # inputs that has been scattered across devices on the first (batch) dimension.
         # The output is a list of tensors scattered across devices according to the
         # distribution of dense_x.
+        in_time = time_wrap(False)
         x = parallel_apply(self.bot_l_replicas, dense_x, None, device_ids)
+        ot_time = time_wrap(False)
+        self.par_bmlp_time += (ot_time - in_time)
         # debug prints
         # print(x)
 
         # embeddings
+        in_time = time_wrap(False)
         ly = self.apply_emb(lS_o, lS_i, self.emb_l, self.v_W_l)
+        ot_time = time_wrap(False)
+        self.par_emb_time += (ot_time - in_time)
         # debug prints
         # print(ly)
 
@@ -706,6 +750,7 @@ class DLRM_Net(nn.Module):
         if len(self.emb_l) != len(ly):
             sys.exit("ERROR: corrupted intermediate result in parallel_forward call")
 
+        in_time = time_wrap(False)
         t_list = []
         for k, _ in enumerate(self.emb_l):
             d = torch.device("cuda:" + str(k % ndevices))
@@ -716,11 +761,18 @@ class DLRM_Net(nn.Module):
         # debug prints
         # print(ly)
 
+        ot_time = time_wrap(False)
+        self.par_emb_time += (ot_time - in_time)
+
         # interactions
+        in_time = time_wrap(False)
         z = []
         for k in range(ndevices):
             zk = self.interact_features(x[k], ly[k])
             z.append(zk)
+        ot_time = time_wrap(False)
+
+        self.par_int_time += (ot_time - in_time)
         # debug prints
         # print(z)
 
@@ -730,10 +782,16 @@ class DLRM_Net(nn.Module):
         # that by construction are scattered across devices on the first (batch) dim.
         # The output is a list of tensors scattered across devices according to the
         # distribution of z.
+
+        in_time = time_wrap(False)
         p = parallel_apply(self.top_l_replicas, z, None, device_ids)
+
 
         ### gather the distributed results ###
         p0 = gather(p, self.output_d, dim=0)
+
+        ot_time = time_wrap(False)
+        self.par_tmlp_time += (ot_time - in_time)
 
         # clamp output if needed
         if 0.0 < self.loss_threshold and self.loss_threshold < 1.0:
@@ -789,10 +847,22 @@ def inference(
         scores = []
         targets = []
     inference_time = 0
+    seq_bmlp_time = 0
+    seq_tmlp_time = 0
+    seq_emb_time = 0
+    seq_int_time = 0
+
+    par_bmlp_time = 0
+    par_tmlp_time = 0
+    par_emb_time = 0
+    par_int_time = 0
 
     for i, testBatch in enumerate(test_ld):
         # early exit if nbatches was set by the user and was exceeded
         if nbatches > 0 and i >= nbatches:
+            break
+
+        if i >= 1000:
             break
 
         X_test, lS_o_test, lS_i_test, T_test, W_test, CBPP_test = unpack_batch(
@@ -806,6 +876,16 @@ def inference(
 
         # forward pass
         temp_inf_start = time_wrap(use_gpu)
+        seq_bmlp_time -= dlrm.seq_bmlp_time
+        seq_tmlp_time -= dlrm.seq_tmlp_time
+        seq_emb_time -= dlrm.seq_emb_time
+        seq_int_time -= dlrm.seq_int_time
+
+        par_bmlp_time -= dlrm.par_bmlp_time
+        par_tmlp_time -= dlrm.par_tmlp_time
+        par_emb_time -= dlrm.par_emb_time
+        par_int_time -= dlrm.par_int_time
+        
         Z_test = dlrm_wrap(
             X_test,
             lS_o_test,
@@ -816,6 +896,16 @@ def inference(
         )
         temp_inf_stop = time_wrap(use_gpu)
         inference_time += temp_inf_stop - temp_inf_start
+        seq_bmlp_time += dlrm.seq_bmlp_time
+        seq_tmlp_time += dlrm.seq_tmlp_time
+        seq_emb_time += dlrm.seq_emb_time
+        seq_int_time += dlrm.seq_int_time
+
+        par_bmlp_time += dlrm.par_bmlp_time
+        par_tmlp_time += dlrm.par_tmlp_time
+        par_emb_time += dlrm.par_emb_time
+        par_int_time += dlrm.par_int_time
+
         ### gather the distributed results on each rank ###
         # For some reason it requires explicit sync before all_gather call if
         # tensor is on GPU memory
@@ -917,6 +1007,14 @@ def inference(
             flush=True,
         )
     print("Inference time", inference_time)
+    print("seq_bmlp_time: ", seq_bmlp_time)
+    print("seq_int_time: ", seq_int_time)
+    print("seq_emb_time", seq_emb_time)
+    print("seq_tmlp_time", seq_tmlp_time)
+    print("par_bmlp_time: ", par_bmlp_time)
+    print("par_int_time: ", par_int_time)
+    print("par_emb_time", par_emb_time)
+    print("par_tmlp_time", par_tmlp_time)
     return model_metrics_dict, is_best
 
 
@@ -948,6 +1046,8 @@ def run():
     parser.add_argument("--qr-operation", type=str, default="mult")
     parser.add_argument("--qr-collisions", type=int, default=4)
     parser.add_argument("--is-rma", action="store_true", default=False)
+    parser.add_argument("--rma-sparse", action="store_true", default=False)
+    parser.add_argument("--use-new-robez", action="store_true", default=False)
     parser.add_argument("--rma-size", type=int, default=1000000)
     parser.add_argument("--rma-chunk-size", type=int, default=1) # set to bus size for fastest but at the cost of correlations
     # activations and loss
@@ -1312,9 +1412,13 @@ def run():
         weighted_pooling=args.weighted_pooling,
         loss_function=args.loss_function,
         is_rma=args.is_rma,
+        use_new_robez = args.use_new_robez,
+        rma_sparse = args.rma_sparse,
         rma_size=args.rma_size,
         rma_chunk_size = args.rma_chunk_size,
     )
+    total_params = sum(p.numel() for p in dlrm.parameters())
+    print("total parameters", total_params) 
 
     # test prints
     if args.debug_mode:
@@ -1529,6 +1633,8 @@ def run():
             k = 0
             total_time_begin = 0
             training_time = 0
+            train_inf_time = 0
+            train_back_time = 0
             while k < args.nepochs:
                 if args.mlperf_logging:
                     mlperf_logger.barrier()
@@ -1585,6 +1691,7 @@ def run():
                     mbs = T.shape[0]  # = args.mini_batch_size except maybe for last
 
                     train_temp_start = time_wrap(use_gpu)
+                    train_inf_start = time_wrap(use_gpu)
 
                     # forward pass
                     Z = dlrm_wrap(
@@ -1595,6 +1702,7 @@ def run():
                         device,
                         ndevices=ndevices,
                     )
+                    train_inf_stop = time_wrap(use_gpu)
 
                     if ext_dist.my_size > 1:
                         T = T[ext_dist.get_my_slice(mbs)]
@@ -1617,6 +1725,7 @@ def run():
                     # A = np.sum((np.round(S, 0) == T).astype(np.uint8))
                     # A_shifted = np.sum((np.round(S_shifted, 0) == T).astype(np.uint8))
 
+                    train_back_start = time_wrap(use_gpu)
                     with record_function("DLRM backward"):
                         # scaled error gradient propagation
                         # (where we do not accumulate gradients across mini-batches)
@@ -1629,9 +1738,12 @@ def run():
                         if (args.mlperf_logging and (j + 1) % args.mlperf_grad_accum_iter == 0) or not args.mlperf_logging:
                             optimizer.step()
                             lr_scheduler.step()
+                    train_back_stop = time_wrap(use_gpu)
 
                     train_temp_stop = time_wrap(use_gpu)
                     training_time += train_temp_stop - train_temp_start
+                    train_inf_time += train_inf_stop - train_inf_start
+                    train_back_time += train_back_stop - train_back_start
 
                     if args.mlperf_logging:
                         total_time += iteration_time
@@ -1669,8 +1781,8 @@ def run():
                             wall_time = " ({})".format(time.strftime("%H:%M"))
 
                         print(
-                            "Finished {} it {}/{} of epoch {}, {:.2f} ms/it, training_time:{:.4f}".format(
-                                str_run_type, j + 1, nbatches, k, gT, training_time
+                            "Finished {} it {}/{} of epoch {}, {:.2f} ms/it, training_time:{:.4f}, train_inf_time:{:4f}, train_back_time:{:4f}".format(
+                                str_run_type, j + 1, nbatches, k, gT, training_time, train_inf_time, train_back_time
                             )
                             + " loss {:.6f}".format(train_loss)
                             + wall_time,
