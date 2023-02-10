@@ -99,9 +99,11 @@ from tricks.md_embedding_bag import PrEmbeddingBag, md_solver
 from tricks.qr_embedding_bag import QREmbeddingBag
 
 # RMA
-import hashedEmbeddingBag
+#import hashedEmbeddingBag
 import RobezEmbeddingCPU
-import robez
+#import robez
+
+NUM_BATCHES_TEST=2500
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -476,6 +478,7 @@ class DLRM_Net(nn.Module):
 
                 ly.append(QV)
             else:
+
                 E = emb_l[k]
                 V = E(
                     sparse_index_group_batch,
@@ -862,7 +865,7 @@ def inference(
         if nbatches > 0 and i >= nbatches:
             break
 
-        if i >= 1000:
+        if i >= NUM_BATCHES_TEST:
             break
 
         X_test, lS_o_test, lS_i_test, T_test, W_test, CBPP_test = unpack_batch(

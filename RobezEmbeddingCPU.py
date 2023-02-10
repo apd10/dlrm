@@ -6,52 +6,30 @@ import torch.nn.init as init
 import numpy as np
 from torch.nn.parameter import Parameter
 import math
-import pdb
 import time
+import robe
+import pdb
+
+def par_idx_py(indices, dimension, chunk_size, size, A, B, C, P):
+    helper_Eidx_base = torch.div(torch.arange(dimension, dtype=torch.int64), chunk_size, rounding_mode='trunc')
+    helper_Eidx_offset = torch.arange(dimension, dtype=torch.int64) % chunk_size
+    helper_E1sR = torch.ones(dimension, dtype=torch.int64) * A
+    hashed_idx = ((((((indices.view(-1,1)) * helper_E1sR)  + (helper_Eidx_base+1) * B) + C) %P) % (size - chunk_size) + helper_Eidx_offset)
+    return hashed_idx
 
 
-class RobezFunction(torch.autograd.Function):
-    #hashing = []
-    #lookup = []
-    #other = []
-
+class RobezIDXFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, hashed_weights, indices, embedding_dim, val_offset, P, A, B, C, hashed_weights_size, helper_E1sR, helper_Eidx_base, helper_Eidx_offset, robez_chunk_size, sparse):
-        assert(indices.dim() == 1) # indices has tobe a one dimensional array of integers.
-        # universal hashing
-        #hashed_idx = ((((((indices.view(-1,1) + val_offset) * helper_E1sR) %P  + helper_Eidx_base * B) %P  + A) % P) % (hashed_weights_size -robez_chunk_size +1) + helper_Eidx_offset)
-        #hashed_idx = ((((((indices.view(-1,1) + val_offset) * helper_E1sR)  + helper_Eidx_base * B) + A) % P) % (hashed_weights_size -robez_chunk_size +1) + helper_Eidx_offset)
-
-        #ts1 = time.perf_counter()
-        hashed_idx = ((((((indices.view(-1,1) + val_offset) * helper_E1sR)  + helper_Eidx_base * B) + A) % P) % (hashed_weights_size -robez_chunk_size +1) + helper_Eidx_offset)
-        #ts2 = time.perf_counter()
-        output = hashed_weights[hashed_idx]
-        #ts3 = time.perf_counter()
-        ctx.save_for_backward(indices, hashed_idx)
-        ctx.hashed_weights_size = hashed_weights_size
-        ctx.sparse = sparse
-        #ts4 = time.perf_counter()
-        #RobezFunction.hashing.append(ts2 - ts1)
-        #RobezFunction.lookup.append(ts3 - ts2)
-        #RobezFunction.other.append(ts4 - ts3)
-        return output
+    def forward(ctx, indices, embedding_dim, val_offset, P, A, B, C, robez_chunk_size, size):
+        hashed_idx = robe.get_idx_s(indices + val_offset, embedding_dim, robez_chunk_size, size, A, B, C, P)
+        #hashed_idx = par_idx_py(indices + val_offset, embedding_dim, robez_chunk_size, size, A, B, C, P)
+        #hashed_idx = robe.get_idx_s_power2(indices + val_offset, embedding_dim, robez_chunk_size, 21, A, B, C, P)
+        return hashed_idx
 
 
     @staticmethod
     def backward(ctx, grad):
-        indices, hashed_idx = ctx.saved_variables
-        hashed_weights_size = ctx.hashed_weights_size
-        hashed_idx1 = hashed_idx.reshape(-1)
-        grad1 = grad.reshape(-1)
-        if ctx.sparse:
-            unique, inv_idx = torch.unique(hashed_idx1, return_inverse=True)
-            values = torch.zeros(unique.shape, device=indices.device, dtype=torch.float32)
-            values.scatter_add_(0,inv_idx, grad1)
-            weight_grad = torch.sparse_coo_tensor(unique.view(1, -1), values, (ctx.hashed_weights_size,), device=indices.device)
-        else:
-            weight_grad = torch.zeros((hashed_weights_size,),dtype=torch.float32, device=indices.device) 
-            weight_grad.scatter_add_(0, hashed_idx1, grad1)
-        return weight_grad, None, None, None, None, None, None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None, None
 
 class RobezEmbedding(nn.Module):
     def __init__(
@@ -93,12 +71,15 @@ class RobezEmbedding(nn.Module):
         self.helper_Eidx_offset = nn.Parameter(helper_Eidx_offset, requires_grad=False)
         self.helper_E1sR = nn.Parameter(helper_E1sR, requires_grad=False)
 
+        #self.table_8 = nn.Parameter(torch.randperm(2**8), requires_grad=False)
+        #self.bits = int(np.log2(self.weight.numel()))
+        #self.positions = nn.Parameter(torch.arange(int(self.embedding_dim / self.robez_chunk_size)), requires_grad=False)
+        #self.offsets = nn.Parameter(torch.arange(int(self.robez_chunk_size)), requires_grad=False)
+        #print(self.positions)
+        
 
     def forward(self, indices: torch.Tensor, optional_tensor=None, per_sample_weights=None) -> torch.Tensor:
-
-        #def forward(ctx, hashed_weights, indices, embedding_dim, val_offset, P, A, B, hashed_weights_size, helper_E1sR, helper_Eidx):
-        embeddings =  RobezFunction.apply(
-            self.weight,
+        idx =  RobezIDXFunction.apply(
             indices,
             self.embedding_dim,
             self.val_offset,
@@ -106,11 +87,8 @@ class RobezEmbedding(nn.Module):
             self.random_numbers[1],
             self.random_numbers[2],
             self.random_numbers[3],
-            self.weights_size,
-            self.helper_E1sR,
-            self.helper_Eidx_base,
-            self.helper_Eidx_offset,
             self.robez_chunk_size,
-            self.sparse
+            self.weights_size,
         )
-        return embeddings
+        #idx = torch.zeros((indices.size(0), self.embedding_dim), device=indices.device, dtype=torch.int64)
+        return self.weight[idx]
