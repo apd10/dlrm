@@ -99,8 +99,7 @@ from tricks.md_embedding_bag import PrEmbeddingBag, md_solver
 from tricks.qr_embedding_bag import QREmbeddingBag
 
 # RMA
-import hashedEmbeddingBag
-import hashedEmbeddingCPU
+import RobezEmbeddingCPU
 
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -274,10 +273,11 @@ class DLRM_Net(nn.Module):
                 ).astype(np.float32)
                 EE.embs.weight.data = torch.tensor(W, requires_grad=True)
             elif self.is_rma:
-                EE = hashedEmbeddingBag.HashedEmbeddingBag(n, m, 0.001 #dummy
-                                        ,mode="sum", _weight=self.hashed_weight, signature=None,
-                                        hmode="rand_hash", keymode="keymode_hashweight", val_offset = val_idx_offset, uma_chunk_size=self.rma_chunk_size)
+                #EE = hashedEmbeddingBag.HashedEmbeddingBag(n, m, 0.001 #dummy
+                                        #,mode="sum", _weight=self.hashed_weight, signature=None,
+                                        #hmode="rand_hash", keymode="keymode_hashweight", val_offset = val_idx_offset, uma_chunk_size=self.rma_chunk_size)
                 #EE = hashedEmbeddingCPU.HashedEmbeddingCPU(n, m, self.hashed_weight, val_offset = val_idx_offset)
+                EE = RobezEmbeddingCPU.RobezEmbedding(n, m, self.hashed_weight, val_offset=val_idx_offset, robez_chunk_size=self.rma_chunk_size, use_gpu = self.use_gpu)
             else:
                 EE = nn.EmbeddingBag(n, m, mode="sum", sparse=True)
                 # initialize embeddings
@@ -322,7 +322,8 @@ class DLRM_Net(nn.Module):
         loss_function="bce",
         is_rma=False,
         rma_size=1000000,
-        rma_chunk_size=1
+        rma_chunk_size=1,
+        use_gpu=True,
     ):
         super(DLRM_Net, self).__init__()
 
@@ -344,6 +345,7 @@ class DLRM_Net(nn.Module):
             self.sync_dense_params = sync_dense_params
             self.loss_threshold = loss_threshold
             self.loss_function=loss_function
+            self.use_gpu = use_gpu
             if weighted_pooling is not None and weighted_pooling != "fixed":
                 self.weighted_pooling = "learned"
             else:
@@ -792,8 +794,11 @@ def inference(
 
     for i, testBatch in enumerate(test_ld):
         # early exit if nbatches was set by the user and was exceeded
+        #if nbatches > 0 and i >= nbatches:
         if nbatches > 0 and i >= nbatches:
             break
+        if (i % 100 == 0):
+            print(i, flush=True)
 
         X_test, lS_o_test, lS_i_test, T_test, W_test, CBPP_test = unpack_batch(
             testBatch
@@ -1314,6 +1319,7 @@ def run():
         is_rma=args.is_rma,
         rma_size=args.rma_size,
         rma_chunk_size = args.rma_chunk_size,
+        use_gpu = use_gpu
     )
 
     # test prints
@@ -1448,6 +1454,9 @@ def run():
             args.print_freq = ld_nbatches
             args.test_freq = 0
 
+        if not use_gpu:
+            print(" moving to CPU")
+            dlrm = dlrm.cpu()
         print(
             "Saved at: epoch = {:d}/{:d}, batch = {:d}/{:d}, ntbatch = {:d}".format(
                 ld_k, ld_nepochs, ld_j, ld_nbatches, ld_nbatches_test
